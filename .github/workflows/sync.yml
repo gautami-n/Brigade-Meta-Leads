@@ -9,7 +9,9 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     permissions:
-      contents: write          # needed to commit .pushed_ids.json back
+      contents: write
+      pages: write
+      id-token: write
 
     steps:
       - name: Checkout repo
@@ -24,7 +26,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run sync
+      - name: Sync leads to OneDrive
         env:
           META_SYSTEM_USER_TOKEN: ${{ secrets.META_SYSTEM_USER_TOKEN }}
           MS_REFRESH_TOKEN: ${{ secrets.MS_REFRESH_TOKEN }}
@@ -32,10 +34,34 @@ jobs:
           MS_FILE_ID: ${{ secrets.MS_FILE_ID }}
         run: python -u sync.py
 
-      - name: Save pushed IDs back to repo
+      - name: Generate dashboard
+        env:
+          META_SYSTEM_USER_TOKEN: ${{ secrets.META_SYSTEM_USER_TOKEN }}
+        run: python -u generate_dashboard.py
+
+      - name: Commit updated files
         run: |
           git config user.name  "brigade-sync-bot"
           git config user.email "sync-bot@brigade"
-          git add .pushed_ids.json
-          git diff --staged --quiet || git commit -m "sync: update pushed lead IDs [skip ci]"
+          git add .pushed_ids.json dashboard.html
+          git diff --staged --quiet || git commit -m "sync: update leads [skip ci]"
           git push
+
+      - name: Deploy dashboard to GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+  deploy:
+    needs: sync
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
