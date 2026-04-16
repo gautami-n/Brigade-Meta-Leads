@@ -1,7 +1,7 @@
 """
 Brigade Meta Leads — Dashboard Generator
 Fetches all leads from Meta API and generates a self-contained HTML dashboard.
-Runs after every sync via GitHub Actions.
+Features: date range filter, Excel export, all form question fields.
 """
 
 import requests, os, json
@@ -25,42 +25,66 @@ FORMS = [
 ]
 
 PROPERTIES = ["Signature", "Woodrose", "Regent", "Augusta", "Galaxy"]
-COLORS     = {"Signature": "#1a3c6e", "Woodrose": "#6e1a3c", "Regent": "#1a6e3c",
-              "Augusta": "#6e4a1a", "Galaxy": "#3c1a6e"}
+COLORS     = {
+    "Signature": "#1a3c6e",
+    "Woodrose":  "#6e1a3c",
+    "Regent":    "#1a6e3c",
+    "Augusta":   "#6e4a1a",
+    "Galaxy":    "#3c1a6e",
+}
 
 
 def fmt_date(iso_str):
     try:
         dt = datetime.fromisoformat(iso_str.replace('+0000', '+00:00'))
-        return dt.astimezone(IST).strftime("%-d %b %Y, %-I:%M %p")
+        return dt.astimezone(IST).strftime("%d %b %Y, %I:%M %p")
     except Exception:
         return iso_str
 
-def fetch_all_leads(form_id):
-    leads, url = [], f"https://graph.facebook.com/v21.0/{form_id}/leads"
-    params = {"access_token": META_TOKEN, "fields": "created_time,field_data,id", "limit": 100}
 
-    # Get field labels
-    r = requests.get(f"https://graph.facebook.com/v21.0/{form_id}",
-                     params={"access_token": META_TOKEN, "fields": "questions"})
+def iso_to_ts(iso_str):
+    try:
+        dt = datetime.fromisoformat(iso_str.replace('+0000', '+00:00'))
+        return dt.astimezone(IST).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+def fetch_all_leads(form_id):
+    leads = []
+    url   = f"https://graph.facebook.com/v21.0/{form_id}/leads"
+
+    # Get field labels + option maps
+    r         = requests.get(f"https://graph.facebook.com/v21.0/{form_id}",
+                             params={"access_token": META_TOKEN, "fields": "questions"})
     label_map = {"full_name": "Name", "phone_number": "Phone", "email": "Email"}
     value_map = {}
+    q_order   = ["Name", "Phone", "Email"]   # preserve question order
+
     for q in r.json().get("questions", []):
-        key = q.get("key", "")
+        key   = q.get("key", "")
+        label = label_map.get(key, q.get("label", key))
         if key not in label_map:
-            label_map[key] = q.get("label", key)
+            label_map[key] = label
+        if label not in q_order:
+            q_order.append(label)
         if q.get("options"):
             value_map[key] = {o["key"]: o["value"] for o in q["options"]}
+
+    params = {"access_token": META_TOKEN, "fields": "created_time,field_data,id", "limit": 100}
 
     while url:
         resp = requests.get(url, params=params)
         data = resp.json()
         if "error" in data:
             print(f"  Error {form_id}: {data['error']['message']}", flush=True)
-            return []
+            return [], q_order
         for lead in data.get("data", []):
-            row = {"id": lead["id"], "date": fmt_date(lead["created_time"]),
-                   "date_raw": lead["created_time"]}
+            row = {
+                "id":      lead["id"],
+                "date":    fmt_date(lead["created_time"]),
+                "date_ts": iso_to_ts(lead["created_time"]),
+            }
             for field in lead.get("field_data", []):
                 col = label_map.get(field["name"], field["name"])
                 raw = field["values"][0] if field.get("values") else ""
@@ -68,192 +92,78 @@ def fetch_all_leads(form_id):
             leads.append(row)
         url    = data.get("paging", {}).get("next")
         params = {}
-    return leads
+
+    return leads, q_order
 
 
 def fetch_all_data():
-    data = defaultdict(list)  # property -> list of leads with 'form_type'
+    all_leads   = []
+    form_schemas = {}   # sheet -> [col names in order]
+
     for form in FORMS:
         print(f"  Fetching {form['sheet']}...", flush=True)
-        leads = fetch_all_leads(form["form_id"])
+        leads, q_order = fetch_all_leads(form["form_id"])
         print(f"    → {len(leads)} leads", flush=True)
+
+        form_schemas[form["sheet"]] = q_order
+
         for lead in leads:
-            lead["form_type"] = form["type"]
-            lead["sheet"]     = form["sheet"]
-        data[form["property"]].extend(leads)
-    return data
+            lead["_property"]  = form["property"]
+            lead["_form_type"] = form["type"]
+            lead["_sheet"]     = form["sheet"]
+        all_leads.extend(leads)
+
+    return all_leads, form_schemas
 
 
-def leads_by_day(leads, days=30):
-    counts = defaultdict(int)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    for lead in leads:
-        try:
-            dt = datetime.fromisoformat(lead["date_raw"].replace('+0000', '+00:00'))
-            if dt >= cutoff:
-                counts[dt.astimezone(IST).strftime("%d %b")] += 1
-        except Exception:
-            pass
-    # Fill all days
-    result = {}
-    for i in range(days - 1, -1, -1):
-        label = (datetime.now(IST) - timedelta(days=i)).strftime("%d %b")
-        result[label] = counts.get(label, 0)
-    return result
+def generate(all_leads, form_schemas):
+    now_str = datetime.now(IST).strftime("%d %b %Y, %I:%M %p IST")
 
+    # Fix phone formatting
+    for lead in all_leads:
+        p = lead.get("Phone", "")
+        if p and not p.startswith("+") and str(p).isdigit() and len(str(p)) >= 10:
+            lead["Phone"] = "+" + str(p)
 
-def build_lead_row(lead, extra_cols):
-    name  = lead.get("Name", "—")
-    phone = lead.get("Phone", "—")
-    if phone and not phone.startswith('+') and phone.isdigit() and len(phone) >= 10:
-        phone = '+' + phone
-    email = lead.get("Email", "—")
-    date  = lead.get("date", "—")
-    ftype = lead.get("form_type", "—")
-    extras = "".join(f"<td>{lead.get(c,'—')}</td>" for c in extra_cols)
-    return f"""<tr>
-      <td><strong>{name}</strong></td>
-      <td>{phone}</td>
-      <td>{email or '—'}</td>
-      <td>{ftype}</td>
-      <td>{date}</td>
-      {extras}
-    </tr>"""
+    # Sort newest first
+    all_leads.sort(key=lambda l: l.get("date_ts", ""), reverse=True)
 
+    # Date bounds for the date picker defaults
+    dates     = [l["date_ts"] for l in all_leads if l.get("date_ts")]
+    min_date  = min(dates) if dates else ""
+    max_date  = max(dates) if dates else ""
 
-def get_extra_cols(leads):
-    skip = {"id", "date", "date_raw", "form_type", "sheet", "Name", "Phone", "Email"}
-    cols = []
-    for lead in leads:
-        for k in lead:
-            if k not in skip and k not in cols:
-                cols.append(k)
-    return cols
+    # Build per-property schemas (union of all question columns)
+    prop_schemas = defaultdict(list)
+    for sheet, cols in form_schemas.items():
+        prop = next((f["property"] for f in FORMS if f["sheet"] == sheet), None)
+        if prop:
+            for c in cols:
+                if c not in prop_schemas[prop]:
+                    prop_schemas[prop].append(c)
 
+    # Stats
+    total     = len(all_leads)
+    week_cut  = (datetime.now(IST) - timedelta(days=7)).strftime("%Y-%m-%d")
+    today_cut = (datetime.now(IST) - timedelta(days=1)).strftime("%Y-%m-%d")
+    this_week = sum(1 for l in all_leads if l.get("date_ts","") >= week_cut)
+    today     = sum(1 for l in all_leads if l.get("date_ts","") >= today_cut)
+    prop_counts = {p: sum(1 for l in all_leads if l["_property"] == p) for p in PROPERTIES}
 
-def build_property_section(prop, leads, color):
-    total      = len(leads)
-    trend      = leads_by_day(leads, 30)
-    labels     = list(trend.keys())
-    values     = list(trend.values())
-    extra_cols = get_extra_cols(leads)
+    # Pre-build all dynamic HTML/JS fragments before f-string
+    leads_json   = json.dumps(all_leads, ensure_ascii=False)
+    schemas_json = json.dumps({p: prop_schemas[p] for p in PROPERTIES}, ensure_ascii=False)
+    colors_json  = json.dumps(COLORS)
+    props_json   = json.dumps(PROPERTIES)
 
-    # Sort leads newest first
-    def sort_key(l):
-        try:
-            return datetime.fromisoformat(l["date_raw"].replace('+0000', '+00:00'))
-        except:
-            return datetime.min.replace(tzinfo=timezone.utc)
-    leads_sorted = sorted(leads, key=sort_key, reverse=True)
-
-    extra_headers = "".join(f"<th>{c}</th>" for c in extra_cols)
-    rows          = "".join(build_lead_row(l, extra_cols) for l in leads_sorted)
-
-    # This week
-    week_cutoff = datetime.now(timezone.utc) - timedelta(days=7)
-    this_week   = sum(1 for l in leads if _lead_after(l, week_cutoff))
-    today_cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-    today        = sum(1 for l in leads if _lead_after(l, today_cutoff))
-
-    return f"""
-<div class="prop-section" id="prop-{prop.lower()}">
-  <div class="prop-header" style="background:{color}">
-    <div>
-      <div class="prop-name">{prop}</div>
-      <div class="prop-sub">{total} total leads</div>
-    </div>
-    <div class="prop-stats">
-      <div class="prop-stat"><div class="ps-val">{total}</div><div class="ps-lbl">Total</div></div>
-      <div class="prop-stat"><div class="ps-val">{this_week}</div><div class="ps-lbl">This week</div></div>
-      <div class="prop-stat"><div class="ps-val">{today}</div><div class="ps-lbl">Today</div></div>
-    </div>
-  </div>
-
-  <div class="chart-wrap">
-    <canvas id="chart-{prop.lower()}" height="80"></canvas>
-  </div>
-
-  <div class="table-wrap">
-    <table>
-      <thead><tr>
-        <th>Name</th><th>Phone</th><th>Email</th><th>Form</th><th>Submitted At</th>
-        {extra_headers}
-      </tr></thead>
-      <tbody>{rows if rows else '<tr><td colspan="10" style="text-align:center;color:#9ca3af">No leads yet</td></tr>'}</tbody>
-    </table>
-  </div>
-</div>
-<script>
-(function(){{
-  var ctx = document.getElementById('chart-{prop.lower()}').getContext('2d');
-  new Chart(ctx, {{
-    type: 'bar',
-    data: {{
-      labels: {json.dumps(labels)},
-      datasets: [{{
-        label: 'Leads',
-        data: {json.dumps(values)},
-        backgroundColor: '{color}cc',
-        borderRadius: 4
-      }}]
-    }},
-    options: {{
-      responsive: true,
-      plugins: {{ legend: {{ display: false }} }},
-      scales: {{
-        x: {{ grid: {{ display: false }}, ticks: {{ maxTicksLimit: 10, font: {{ size: 11 }} }} }},
-        y: {{ beginAtZero: true, ticks: {{ stepSize: 1 }} }}
-      }}
-    }}
-  }});
-}})();
-</script>"""
-
-
-def _lead_after(lead, cutoff):
-    try:
-        dt = datetime.fromisoformat(lead["date_raw"].replace('+0000', '+00:00'))
-        return dt >= cutoff
-    except:
-        return False
-
-
-def generate(data):
-    now_str  = datetime.now(IST).strftime("%-d %b %Y, %-I:%M %p IST")
-    total    = sum(len(v) for v in data.values())
-    week_cut = datetime.now(timezone.utc) - timedelta(days=7)
-    today_cut= datetime.now(timezone.utc) - timedelta(hours=24)
-    all_leads= [l for leads in data.values() for l in leads]
-    this_week= sum(1 for l in all_leads if _lead_after(l, week_cut))
-    today    = sum(1 for l in all_leads if _lead_after(l, today_cut))
-
-    # Nav tabs
-    nav = '<button class="tab active" onclick="showProp(\'all\',this)">All Properties</button>'
-    nav += "".join(
-        f'<button class="tab" onclick="showProp(\'{p.lower()}\',this)" style="--tc:{COLORS[p]}">{p}</button>'
+    prop_tabs = "".join(
+        '<button class="tab" onclick="showTab(\'' + p.lower() + '\',this)">' + p + '</button>'
         for p in PROPERTIES
     )
-
-    # Summary donut data
-    donut_labels = [p for p in PROPERTIES if data.get(p)]
-    donut_values = [len(data.get(p, [])) for p in donut_labels]
-    donut_colors = [COLORS[p] for p in donut_labels]
-
-    # Property sections
-    sections = ""
-    for prop in PROPERTIES:
-        leads = data.get(prop, [])
-        sections += build_property_section(prop, leads, COLORS[prop])
-
-    # All-properties table (summary)
-    all_sorted = sorted(all_leads, key=lambda l: l.get("date_raw", ""), reverse=True)[:50]
-    all_rows   = "".join(f"""<tr>
-      <td><strong>{l.get('Name','—')}</strong></td>
-      <td>{l.get('sheet','—').split(' - ')[0]}</td>
-      <td>{l.get('form_type','—')}</td>
-      <td>{('+' if (l.get('Phone','') and not l.get('Phone','').startswith('+') and l.get('Phone','').isdigit()) else '') + l.get('Phone','—')}</td>
-      <td>{l.get('date','—')}</td>
-    </tr>""" for l in all_sorted)
+    prop_counts_str = ", ".join(
+        str(sum(1 for l in all_leads if l["_property"] == p)) for p in PROPERTIES
+    )
+    active_props = sum(1 for p in PROPERTIES if any(l["_property"] == p for l in all_leads))
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -261,50 +171,67 @@ def generate(data):
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Brigade Hospitality — Leads Dashboard</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;color:#1a1a2e}}
-.header{{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 60%,#0f3460 100%);color:white;padding:28px 40px;display:flex;justify-content:space-between;align-items:center}}
-.header h1{{font-size:1.7rem;font-weight:700;letter-spacing:-.3px}}
-.header p{{opacity:.6;font-size:.85rem;margin-top:4px}}
-.updated{{background:rgba(255,255,255,.12);padding:6px 14px;border-radius:20px;font-size:.72rem;opacity:.9}}
-.container{{max-width:1200px;margin:0 auto;padding:28px 20px}}
-.summary{{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:28px}}
-.card{{background:white;border-radius:14px;padding:20px 24px;box-shadow:0 2px 10px rgba(0,0,0,.06)}}
-.card-val{{font-size:2rem;font-weight:700;color:#0f3460}}
-.card-lbl{{font-size:.72rem;text-transform:uppercase;letter-spacing:.8px;color:#9ca3af;margin-top:4px;font-weight:600}}
-.donut-card{{background:white;border-radius:14px;padding:20px;box-shadow:0 2px 10px rgba(0,0,0,.06);display:flex;align-items:center;gap:24px}}
-.donut-card canvas{{max-width:160px;max-height:160px}}
-.donut-legend{{flex:1}}
-.dl-row{{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:.84rem}}
-.dl-dot{{width:10px;height:10px;border-radius:50%;flex-shrink:0}}
-.dl-name{{flex:1;color:#444}}
-.dl-val{{font-weight:700;color:#1a1a2e}}
-.nav{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px}}
-.tab{{padding:9px 20px;border-radius:10px;border:2px solid #dde3f5;background:white;color:#6b7280;font-size:.84rem;font-weight:600;cursor:pointer;transition:all .2s}}
+
+.header{{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 60%,#0f3460 100%);color:white;padding:24px 36px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}}
+.header h1{{font-size:1.6rem;font-weight:700}}
+.header p{{opacity:.6;font-size:.82rem;margin-top:3px}}
+.updated{{background:rgba(255,255,255,.12);padding:5px 14px;border-radius:20px;font-size:.72rem}}
+
+.container{{max-width:1280px;margin:0 auto;padding:24px 20px}}
+
+.summary{{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:22px}}
+.card{{background:white;border-radius:12px;padding:18px 22px;box-shadow:0 2px 8px rgba(0,0,0,.06)}}
+.card-val{{font-size:1.9rem;font-weight:700;color:#0f3460}}
+.card-lbl{{font-size:.7rem;text-transform:uppercase;letter-spacing:.8px;color:#9ca3af;margin-top:3px;font-weight:600}}
+
+.toolbar{{background:white;border-radius:12px;padding:16px 20px;box-shadow:0 2px 8px rgba(0,0,0,.06);margin-bottom:22px;display:flex;flex-wrap:wrap;gap:14px;align-items:center}}
+.toolbar label{{font-size:.78rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}}
+.toolbar input[type=date]{{padding:7px 12px;border:1.5px solid #e5e7eb;border-radius:8px;font-size:.84rem;color:#1a1a2e;outline:none}}
+.toolbar input[type=date]:focus{{border-color:#0f3460}}
+.toolbar-sep{{flex:1}}
+.btn{{padding:8px 18px;border-radius:8px;font-size:.82rem;font-weight:600;cursor:pointer;border:none;transition:all .18s}}
+.btn-download{{background:#16a34a;color:white}}
+.btn-download:hover{{background:#15803d}}
+.btn-reset{{background:#f3f4f6;color:#374151}}
+.btn-reset:hover{{background:#e5e7eb}}
+.result-count{{font-size:.8rem;color:#9ca3af;font-weight:500}}
+
+.nav{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px}}
+.tab{{padding:8px 18px;border-radius:10px;border:2px solid #e5e7eb;background:white;color:#6b7280;font-size:.82rem;font-weight:600;cursor:pointer;transition:all .18s}}
 .tab.active{{background:#0f3460;color:white;border-color:#0f3460}}
-.tab:hover:not(.active){{border-color:var(--tc,#0f3460);color:var(--tc,#0f3460)}}
-.prop-section{{display:none;background:white;border-radius:16px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.07);margin-bottom:20px}}
-.prop-section.visible{{display:block}}
-.prop-header{{padding:20px 28px;display:flex;justify-content:space-between;align-items:center;color:white}}
-.prop-name{{font-size:1.2rem;font-weight:700}}
-.prop-sub{{font-size:.8rem;opacity:.75;margin-top:3px}}
-.prop-stats{{display:flex;gap:28px}}
-.prop-stat{{text-align:center}}
-.ps-val{{font-size:1.4rem;font-weight:700}}
-.ps-lbl{{font-size:.65rem;opacity:.75;text-transform:uppercase;letter-spacing:.5px}}
-.chart-wrap{{padding:20px 28px 10px;border-bottom:1px solid #f3f4f6}}
+.tab:hover:not(.active){{border-color:#0f3460;color:#0f3460}}
+
+.panel{{display:none}}
+.panel.visible{{display:block}}
+
+.prop-header{{border-radius:12px 12px 0 0;padding:18px 24px;display:flex;justify-content:space-between;align-items:center;color:white}}
+.prop-name{{font-size:1.1rem;font-weight:700}}
+.prop-sub{{font-size:.78rem;opacity:.7;margin-top:2px}}
+.prop-stats{{display:flex;gap:24px}}
+.ps-val{{font-size:1.3rem;font-weight:700;text-align:center}}
+.ps-lbl{{font-size:.62rem;opacity:.72;text-transform:uppercase;letter-spacing:.4px;text-align:center}}
+
+.table-card{{background:white;border-radius:0 0 12px 12px;box-shadow:0 2px 10px rgba(0,0,0,.07);margin-bottom:20px;overflow:hidden}}
 .table-wrap{{overflow-x:auto}}
-table{{width:100%;border-collapse:collapse;font-size:.84rem}}
-th{{background:#1a1a2e;color:white;padding:10px 14px;text-align:left;font-size:.74rem;letter-spacing:.4px;white-space:nowrap}}
-td{{padding:9px 14px;border-bottom:1px solid #f3f4f6;white-space:nowrap}}
+table{{width:100%;border-collapse:collapse;font-size:.82rem}}
+th{{background:#1a1a2e;color:white;padding:10px 13px;text-align:left;font-size:.72rem;letter-spacing:.4px;white-space:nowrap;position:sticky;top:0}}
+td{{padding:9px 13px;border-bottom:1px solid #f3f4f6;white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis}}
 tr:last-child td{{border-bottom:none}}
 tr:hover td{{background:#f8f9ff}}
-.all-section{{background:white;border-radius:16px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.07)}}
-.all-header{{padding:18px 28px;background:#1a1a2e;color:white;font-size:1rem;font-weight:700}}
-.footer{{text-align:center;padding:24px;color:#9ca3af;font-size:.72rem}}
-@media(max-width:700px){{.summary{{grid-template-columns:repeat(2,1fr)}}.prop-stats{{gap:16px}}}}
+.empty{{padding:36px;text-align:center;color:#9ca3af;font-size:.88rem}}
+
+.footer{{text-align:center;padding:22px;color:#9ca3af;font-size:.7rem}}
+
+@media(max-width:700px){{
+  .summary{{grid-template-columns:repeat(2,1fr)}}
+  .prop-stats{{gap:14px}}
+  .toolbar{{flex-direction:column;align-items:flex-start}}
+}}
 </style>
 </head>
 <body>
@@ -321,68 +248,204 @@ tr:hover td{{background:#f8f9ff}}
 
   <!-- Summary cards -->
   <div class="summary">
-    <div class="card"><div class="card-val">{total}</div><div class="card-lbl">Total Leads</div></div>
-    <div class="card"><div class="card-val">{this_week}</div><div class="card-lbl">This Week</div></div>
-    <div class="card"><div class="card-val">{today}</div><div class="card-lbl">Last 24 Hours</div></div>
-    <div class="card"><div class="card-val">{len([p for p in PROPERTIES if data.get(p)])}</div><div class="card-lbl">Properties Active</div></div>
+    <div class="card"><div class="card-val" id="stat-total">{total}</div><div class="card-lbl">Total Leads</div></div>
+    <div class="card"><div class="card-val" id="stat-week">{this_week}</div><div class="card-lbl">This Week</div></div>
+    <div class="card"><div class="card-val" id="stat-today">{today}</div><div class="card-lbl">Last 24 Hours</div></div>
+    <div class="card"><div class="card-val">{active_props}</div><div class="card-lbl">Properties Active</div></div>
   </div>
 
-  <!-- Donut chart -->
-  <div class="donut-card" style="margin-bottom:28px">
-    <canvas id="donut-chart"></canvas>
-    <div class="donut-legend">
-      <div style="font-size:.85rem;font-weight:700;color:#1a1a2e;margin-bottom:12px">Leads by Property</div>
-      {''.join(f'<div class="dl-row"><div class="dl-dot" style="background:{COLORS[p]}"></div><div class="dl-name">{p}</div><div class="dl-val">{len(data.get(p,[]))}</div></div>' for p in PROPERTIES if data.get(p))}
-    </div>
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <label>From</label>
+    <input type="date" id="date-from" value="{min_date}" min="{min_date}" max="{max_date}">
+    <label>To</label>
+    <input type="date" id="date-to" value="{max_date}" min="{min_date}" max="{max_date}">
+    <button class="btn btn-reset" onclick="resetDates()">Reset</button>
+    <div class="toolbar-sep"></div>
+    <span class="result-count" id="result-count"></span>
+    <button class="btn btn-download" onclick="downloadExcel()">⬇ Download Excel</button>
   </div>
 
-  <!-- Nav tabs -->
-  <div class="nav">{nav}</div>
-
-  <!-- All properties view -->
-  <div class="prop-section all-section visible" id="prop-all">
-    <div class="all-header">Recent 50 Leads — All Properties</div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Name</th><th>Property</th><th>Form</th><th>Phone</th><th>Submitted At</th></tr></thead>
-        <tbody>{all_rows}</tbody>
-      </table>
-    </div>
+  <!-- Tabs -->
+  <div class="nav" id="tab-nav">
+    <button class="tab active" onclick="showTab('all',this)">All Properties</button>
+    {prop_tabs}
   </div>
 
-  <!-- Per-property sections -->
-  {sections}
+  <!-- Panels populated by JS -->
+  <div id="panels"></div>
 
 </div>
 
-<div class="footer">Brigade Hospitality x Gautami &nbsp;|&nbsp; Auto-updated every 15 minutes</div>
+<div class="footer">Brigade Hospitality x Gautami &nbsp;|&nbsp; Meta Ads only &nbsp;|&nbsp; Auto-updated every 15 min</div>
 
 <script>
-// Donut chart
-new Chart(document.getElementById('donut-chart'), {{
-  type: 'doughnut',
-  data: {{
-    labels: {json.dumps(donut_labels)},
-    datasets: [{{
-      data: {json.dumps(donut_values)},
-      backgroundColor: {json.dumps(donut_colors)},
-      borderWidth: 0,
-      hoverOffset: 6
-    }}]
-  }},
-  options: {{
-    responsive: true,
-    plugins: {{ legend: {{ display: false }} }}
-  }}
-}});
+const ALL_LEADS   = {leads_json};
+const SCHEMAS     = {schemas_json};
+const COLORS      = {colors_json};
+const PROPERTIES  = {props_json};
 
-// Tab switching
-function showProp(id, el) {{
-  document.querySelectorAll('.prop-section').forEach(s => s.classList.remove('visible'));
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.getElementById('prop-' + id).classList.add('visible');
-  el.classList.add('active');
+const FIXED_COLS  = ['Name','Phone','Email'];
+const META_COLS   = ['_property','_form_type','_sheet','id','date','date_ts'];
+
+let currentTab    = 'all';
+let filteredLeads = [...ALL_LEADS];
+
+// ── Date filter ────────────────────────────────────────────────────────────────
+function getFiltered() {{
+  const from = document.getElementById('date-from').value;
+  const to   = document.getElementById('date-to').value;
+  return ALL_LEADS.filter(l => {{
+    const d = l.date_ts || '';
+    return (!from || d >= from) && (!to || d <= to);
+  }});
 }}
+
+function applyFilter() {{
+  filteredLeads = getFiltered();
+  document.getElementById('result-count').textContent = filteredLeads.length + ' leads';
+  renderPanels();
+}}
+
+function resetDates() {{
+  const dates = ALL_LEADS.map(l=>l.date_ts).filter(Boolean).sort();
+  document.getElementById('date-from').value = dates[0] || '';
+  document.getElementById('date-to').value   = dates[dates.length-1] || '';
+  applyFilter();
+}}
+
+document.getElementById('date-from').addEventListener('change', applyFilter);
+document.getElementById('date-to').addEventListener('change', applyFilter);
+
+// ── Tab switching ──────────────────────────────────────────────────────────────
+function showTab(id, el) {{
+  currentTab = id;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('visible'));
+  const panel = document.getElementById('panel-' + id);
+  if (panel) panel.classList.add('visible');
+}}
+
+// ── Build table ────────────────────────────────────────────────────────────────
+function extraCols(leads) {{
+  const skip = new Set([...META_COLS, ...FIXED_COLS]);
+  const cols = [];
+  leads.forEach(l => Object.keys(l).forEach(k => {{ if (!skip.has(k) && !cols.includes(k)) cols.push(k); }}));
+  return cols;
+}}
+
+function buildTable(leads, showProp) {{
+  if (!leads.length) return '<div class="empty">No leads in this date range.</div>';
+
+  const extra = extraCols(leads);
+  const cols  = showProp
+    ? ['Name','Phone','Email','Property','Form','Submitted At',...extra]
+    : ['Name','Phone','Email','Form','Submitted At',...extra];
+
+  const header = cols.map(c=>`<th>${{c}}</th>`).join('');
+  const rows   = leads.map(l => {{
+    const cells = cols.map(c => {{
+      if (c === 'Property')     return `<td>${{l._property||'—'}}</td>`;
+      if (c === 'Form')         return `<td>${{l._form_type||'—'}}</td>`;
+      if (c === 'Submitted At') return `<td>${{l.date||'—'}}</td>`;
+      return `<td title="${{(l[c]||'').toString().replace(/"/g,"'")}}">${{l[c]||'—'}}</td>`;
+    }}).join('');
+    return `<tr>${{cells}}</tr>`;
+  }}).join('');
+
+  return `<div class="table-wrap"><table><thead><tr>${{header}}</tr></thead><tbody>${{rows}}</tbody></table></div>`;
+}}
+
+// ── Render panels ──────────────────────────────────────────────────────────────
+function renderPanels() {{
+  const container = document.getElementById('panels');
+  let html = '';
+
+  // All panel
+  const today    = new Date().toISOString().slice(0,10);
+  const weekAgo  = new Date(Date.now()-7*86400000).toISOString().slice(0,10);
+  const allTotal = filteredLeads.length;
+  const allWeek  = filteredLeads.filter(l=>(l.date_ts||'')>=weekAgo).length;
+  const allToday = filteredLeads.filter(l=>(l.date_ts||'')>=today).length;
+
+  html += `<div class="panel ${{currentTab==='all'?'visible':''}}" id="panel-all">
+    <div class="prop-header" style="background:#1a1a2e;border-radius:12px 12px 0 0">
+      <div><div class="prop-name">All Properties</div><div class="prop-sub">${{allTotal}} leads in range</div></div>
+      <div class="prop-stats">
+        <div><div class="ps-val">${{allTotal}}</div><div class="ps-lbl">Total</div></div>
+        <div><div class="ps-val">${{allWeek}}</div><div class="ps-lbl">This week</div></div>
+        <div><div class="ps-val">${{allToday}}</div><div class="ps-lbl">Today</div></div>
+      </div>
+    </div>
+    <div class="table-card">${{buildTable(filteredLeads, true)}}</div>
+  </div>`;
+
+  // Per-property panels
+  PROPERTIES.forEach(prop => {{
+    const color  = COLORS[prop] || '#0f3460';
+    const leads  = filteredLeads.filter(l => l._property === prop);
+    const pWeek  = leads.filter(l=>(l.date_ts||'')>=weekAgo).length;
+    const pToday = leads.filter(l=>(l.date_ts||'')>=today).length;
+
+    html += `<div class="panel ${{currentTab===prop.toLowerCase()?'visible':''}}" id="panel-${{prop.toLowerCase()}}">
+      <div class="prop-header" style="background:${{color}};border-radius:12px 12px 0 0">
+        <div><div class="prop-name">${{prop}}</div><div class="prop-sub">${{leads.length}} leads in range</div></div>
+        <div class="prop-stats">
+          <div><div class="ps-val">${{leads.length}}</div><div class="ps-lbl">Total</div></div>
+          <div><div class="ps-val">${{pWeek}}</div><div class="ps-lbl">This week</div></div>
+          <div><div class="ps-val">${{pToday}}</div><div class="ps-lbl">Today</div></div>
+        </div>
+      </div>
+      <div class="table-card">${{buildTable(leads, false)}}</div>
+    </div>`;
+  }});
+
+  container.innerHTML = html;
+  document.getElementById('result-count').textContent = filteredLeads.length + ' leads';
+}}
+
+// ── Excel download ─────────────────────────────────────────────────────────────
+function downloadExcel() {{
+  const wb   = XLSX.utils.book_new();
+  const skip = new Set(META_COLS.filter(c=>c!=='_property'&&c!=='_form_type'));
+
+  // Sheet per property + one "All" sheet
+  const groups = {{'All Properties': filteredLeads}};
+  PROPERTIES.forEach(p => {{ groups[p] = filteredLeads.filter(l=>l._property===p); }});
+
+  Object.entries(groups).forEach(([name, leads]) => {{
+    if (!leads.length) return;
+    const extra = extraCols(leads);
+    const cols  = ['Name','Phone','Email','Property','Form','Submitted At',...extra];
+
+    const rows = leads.map(l => {{
+      const row = {{}};
+      cols.forEach(c => {{
+        if (c==='Property')     row[c] = l._property||'';
+        else if (c==='Form')    row[c] = l._form_type||'';
+        else if (c==='Submitted At') row[c] = l.date||'';
+        else row[c] = l[c]||'';
+      }});
+      return row;
+    }});
+
+    const ws = XLSX.utils.json_to_sheet(rows, {{header: cols}});
+
+    // Column widths
+    ws['!cols'] = cols.map(c => ({{wch: Math.min(Math.max(c.length+2, 12), 40)}}));
+
+    const sheetName = name.slice(0,31);
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  }});
+
+  const from = document.getElementById('date-from').value || 'all';
+  const to   = document.getElementById('date-to').value   || 'time';
+  XLSX.writeFile(wb, `Brigade_Leads_${{from}}_to_${{to}}.xlsx`);
+}}
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+applyFilter();
 </script>
 </body>
 </html>"""
@@ -391,10 +454,10 @@ function showProp(id, el) {{
 
 if __name__ == '__main__':
     print("Fetching all leads for dashboard...", flush=True)
-    data = fetch_all_data()
-    total = sum(len(v) for v in data.values())
+    all_leads, form_schemas = fetch_all_data()
+    total = len(all_leads)
     print(f"Total leads: {total}", flush=True)
-    html = generate(data)
+    html = generate(all_leads, form_schemas)
     out  = os.path.join(os.path.dirname(__file__), 'dashboard.html')
     with open(out, 'w') as f:
         f.write(html)
