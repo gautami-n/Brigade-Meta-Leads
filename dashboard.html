@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Brigade Hospitality — Leads Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;color:#1a1a2e}
+.header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 60%,#0f3460 100%);color:white;padding:28px 40px;display:flex;justify-content:space-between;align-items:center}
+.header h1{font-size:1.7rem;font-weight:700;letter-spacing:-.3px}
+.header p{opacity:.6;font-size:.85rem;margin-top:4px}
+.updated{background:rgba(255,255,255,.12);padding:6px 14px;border-radius:20px;font-size:.72rem;opacity:.9}
+.container{max-width:1200px;margin:0 auto;padding:28px 20px}
+.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:28px}
+.card{background:white;border-radius:14px;padding:20px 24px;box-shadow:0 2px 10px rgba(0,0,0,.06)}
+.card-val{font-size:2rem;font-weight:700;color:#0f3460}
+.card-lbl{font-size:.72rem;text-transform:uppercase;letter-spacing:.8px;color:#9ca3af;margin-top:4px;font-weight:600}
+.donut-card{background:white;border-radius:14px;padding:20px;box-shadow:0 2px 10px rgba(0,0,0,.06);display:flex;align-items:center;gap:24px}
+.donut-card canvas{max-width:160px;max-height:160px}
+.donut-legend{flex:1}
+.dl-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:.84rem}
+.dl-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.dl-name{flex:1;color:#444}
+.dl-val{font-weight:700;color:#1a1a2e}
+.nav{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px}
+.tab{padding:9px 20px;border-radius:10px;border:2px solid #dde3f5;background:white;color:#6b7280;font-size:.84rem;font-weight:600;cursor:pointer;transition:all .2s}
+.tab.active{background:#0f3460;color:white;border-color:#0f3460}
+.tab:hover:not(.active){border-color:var(--tc,#0f3460);color:var(--tc,#0f3460)}
+.prop-section{display:none;background:white;border-radius:16px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.07);margin-bottom:20px}
+.prop-section.visible{display:block}
+.prop-header{padding:20px 28px;display:flex;justify-content:space-between;align-items:center;color:white}
+.prop-name{font-size:1.2rem;font-weight:700}
+.prop-sub{font-size:.8rem;opacity:.75;margin-top:3px}
+.prop-stats{display:flex;gap:28px}
+.prop-stat{text-align:center}
+.ps-val{font-size:1.4rem;font-weight:700}
+.ps-lbl{font-size:.65rem;opacity:.75;text-transform:uppercase;letter-spacing:.5px}
+.chart-wrap{padding:20px 28px 10px;border-bottom:1px solid #f3f4f6}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.84rem}
+th{background:#1a1a2e;color:white;padding:10px 14px;text-align:left;font-size:.74rem;letter-spacing:.4px;white-space:nowrap}
+td{padding:9px 14px;border-bottom:1px solid #f3f4f6;white-space:nowrap}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#f8f9ff}
+.all-section{background:white;border-radius:16px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.07)}
+.all-header{padding:18px 28px;background:#1a1a2e;color:white;font-size:1rem;font-weight:700}
+.footer{text-align:center;padding:24px;color:#9ca3af;font-size:.72rem}
+@media(max-width:700px){.summary{grid-template-columns:repeat(2,1fr)}.prop-stats{gap:16px}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>Brigade Hospitality</h1>
+    <p>Meta Ads — Leads Dashboard</p>
+  </div>
+  <div class="updated">Updated 16 Apr 2026, 5:32 PM IST</div>
+</div>
+
+<div class="container">
+
+  <!-- Summary cards -->
+  <div class="summary">
+    <div class="card"><div class="card-val">0</div><div class="card-lbl">Total Leads</div></div>
+    <div class="card"><div class="card-val">0</div><div class="card-lbl">This Week</div></div>
+    <div class="card"><div class="card-val">0</div><div class="card-lbl">Last 24 Hours</div></div>
+    <div class="card"><div class="card-val">0</div><div class="card-lbl">Properties Active</div></div>
+  </div>
+
+  <!-- Donut chart -->
+  <div class="donut-card" style="margin-bottom:28px">
+    <canvas id="donut-chart"></canvas>
+    <div class="donut-legend">
+      <div style="font-size:.85rem;font-weight:700;color:#1a1a2e;margin-bottom:12px">Leads by Property</div>
+      
+    </div>
+  </div>
+
+  <!-- Nav tabs -->
+  <div class="nav"><button class="tab active" onclick="showProp('all',this)">All Properties</button><button class="tab" onclick="showProp('signature',this)" style="--tc:#1a3c6e">Signature</button><button class="tab" onclick="showProp('woodrose',this)" style="--tc:#6e1a3c">Woodrose</button><button class="tab" onclick="showProp('regent',this)" style="--tc:#1a6e3c">Regent</button><button class="tab" onclick="showProp('augusta',this)" style="--tc:#6e4a1a">Augusta</button><button class="tab" onclick="showProp('galaxy',this)" style="--tc:#3c1a6e">Galaxy</button></div>
+
+  <!-- All properties view -->
+  <div class="prop-section all-section visible" id="prop-all">
+    <div class="all-header">Recent 50 Leads — All Properties</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Property</th><th>Form</th><th>Phone</th><th>Submitted At</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Per-property sections -->
+  
+<div class="prop-section" id="prop-signature">
+  <div class="prop-header" style="background:#1a3c6e">
+    <div>
+      <div class="prop-name">Signature</div>
+      <div class="prop-sub">0 total leads</div>
+    </div>
+    <div class="prop-stats">
+      <div class="prop-stat"><div class="ps-val">0</div><div class="ps-lbl">Total</div></div>
+      <div class="prop-stat"><div class="ps-val">0</div><div class="ps-lbl">This week</div></div>
+      <div class="prop-stat"><div class="ps-val">0</div><div class="ps-lbl">Today</div></div>
+    </div>
+  </div>
+
+  <div class="chart-wrap">
+    <canvas id="chart-signature" height="80"></canvas>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Name</th><th>Phone</th><th>Email</th><th>Form</th><th>Submitted At</th>
+        
+      </tr></thead>
+      <tbody><tr><td colspan="10" style="text-align:center;color:#9ca3af">No leads yet</td></tr></tbody>
+    </table>
+  </div>
+</div>
+<script>
+(function(){
+  var ctx = document.getElementById('chart-signature').getContext('2d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: ["18 Mar", "19 Mar", "20 Mar", "21 Mar", "22 Mar", "23 Mar", "24 Mar", "25 Mar", "26 Mar", "27 Mar", "28 Mar", "29 Mar", "30 Mar", "31 Mar", "01 Apr", "02 Apr", "03 Apr", "04 Apr", "05 Apr", "06 Apr", "07 Apr", "08 Apr", "09 Apr", "10 Apr", "11 Apr", "12 Apr", "13 Apr", "14 Apr", "15 Apr", "16 Apr"],
+      datasets: [{
+        label: 'Leads',
+        data: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        backgroundColor: '#1a3c6ecc',
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 10, font: { size: 11 } } },
+        y: { beginAtZero: true, ticks: { stepSize: 1 } }
+      }
+    }
+  });
+})();
+</script>
+<div class="prop-section" id="prop-woodrose">
+  <div class="prop-header" style="background:#6e1a3c">
+    <div>
+      <div class="prop-name">Woodrose</div>
+      <div class="prop-sub">0 total leads</div>
+    </div>
+    <div class="prop-stats">
+      <div class="prop-stat"><div class="ps-val">0</div><div class="ps-lbl">Total</div></div>
+      <div class="prop-stat"><div class="ps-val">0</div><div class="ps-lbl">This week</div></div>
+      <div class="prop-stat"><div class="ps-val">0</div><div class="ps-lbl">Today</div></div>
+    </div>
+  </div>
+
+  <div class="chart-wrap">
+    <canvas id="chart-woodrose" height="80"></canvas>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Name</th><th>Phone</th><th>Email</th><th>Form</th><th>Submitted At</th>
+        
+      </tr></thead>
+      <tbody><tr><td colspan="10" style="text-align:center;color:#9ca3af">No leads yet</td></tr></tbody>
+    </table>
+  </div>
+</div>
+<script>
+(function(){
+  var ctx = document.getElementById('chart-woodrose').getContext('2d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: ["18 Mar", "19 Mar", "20 Mar", "21 Mar", "22 Mar", "23 Mar", "24 Mar", "25 Mar", "26 Mar", "27 Mar", "28 Mar", "29 Mar", "30 Mar", "31 Mar", "01 Apr", "02 Apr", "03 Apr", "04 Apr", "05 Apr", "06 Apr", "07 Apr", "08 Apr", "09 Apr", "10 Apr", "11 Apr", "12 Apr", "13 Apr", "14 Apr", "15 Apr", "16 Apr"],
+      datasets: [{
+        label: 'Leads',
+        data: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        backgroundColor: '#6e1a3ccc',
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 10, font: { size: 11 } } },
+        y: { beginAtZero: true, ticks: { stepSize: 1 } }
+      }
+    }
+  });
+})();
+</script>
+<div class="prop-section" id="prop-regent">
+  <div class="prop-header" style="background:#1a6e3c">
+    <div>
+      <div class="prop-name">Regent</div>
+      <div class="prop-sub">0 total leads</div>
+    </div>
+    <div class="prop-stats">
+      <div class="prop-stat"><div class="ps-val">0</div><div class="ps-lbl">Total</div></div>
+      <div class="prop-stat"><div class="ps-val">0</div><div class="ps-lbl">This week</div></div>
+      <div class="prop-stat"><div class="ps-val">0</div><div class="ps-lbl">Today</div></div>
+    </div>
+  </div>
+
+  <div class="chart-wrap">
+    <canvas id="chart-regent" height="80"></canvas>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Name</th><th>Phone</th><th>Email</th><th>Form</th><th>Submitted At</th>
+        
+      </tr></thead>
+      <tbody><tr><td colspan="10" style="text-align:center;color:#9ca3af">No leads yet</td></tr></tbody>
+    </table>
+  </div>
+</div>
+<script>
+(function(){
+  var ctx = document.getElementById('chart-regent').getContext('2d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: ["18 Mar", "19 Mar", "20 Mar", "21 Mar", "22 Mar", "23 Mar", "24 Mar", "25 Mar", "26 Mar", "27 Mar", "28 Mar", "29 Mar", "30 Mar", "31 Mar", "01 Apr", "02 Apr", "03 Apr", "04 Apr", "05 Apr", "06 Apr", "07 Apr", "08 Apr", "09 Apr", "10 Apr", "11 Apr", "12 Apr", "13 Apr", "14 Apr", "15 Apr", "16 Apr"],
+      datasets: [{
+        label: 'Leads',
+        data: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        backgroundColor: '#1a6e3ccc',
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 10, font: { size: 11 } } },
+        y: { beginAtZero: true, ticks: { stepSize: 1 } }
+      }
+    }
+  });
+})();
+</script>
+<div class="prop-section" id="prop-augusta">
+  <div class="prop-header" style="background:#6e4a1a">
+    <div>
+      <div class="prop-name">Augusta</div>
+      <div class="prop-sub">0 total leads</div>
+    </div>
+    <div class="prop-stats">
+      <div class="prop-stat"><div class="ps-val">0</div><div class="ps-lbl">Total</div></div>
+      <div class="prop-stat"><div class="ps-val">0</div><div class="ps-lbl">This week</div></div>
+      <div class="prop-stat"><div class="ps-val">0</div><div class="ps-lbl">Today</div></div>
+    </div>
+  </div>
+
+  <div class="chart-wrap">
+    <canvas id="chart-augusta" height="80"></canvas>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Name</th><th>Phone</th><th>Email</th><th>Form</th><th>Submitted At</th>
+        
+      </tr></thead>
+      <tbody><tr><td colspan="10" style="text-align:center;color:#9ca3af">No leads yet</td></tr></tbody>
+    </table>
+  </div>
+</div>
+<script>
+(function(){
+  var ctx = document.getElementById('chart-augusta').getContext('2d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: ["18 Mar", "19 Mar", "20 Mar", "21 Mar", "22 Mar", "23 Mar", "24 Mar", "25 Mar", "26 Mar", "27 Mar", "28 Mar", "29 Mar", "30 Mar", "31 Mar", "01 Apr", "02 Apr", "03 Apr", "04 Apr", "05 Apr", "06 Apr", "07 Apr", "08 Apr", "09 Apr", "10 Apr", "11 Apr", "12 Apr", "13 Apr", "14 Apr", "15 Apr", "16 Apr"],
+      datasets: [{
+        label: 'Leads',
+        data: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        backgroundColor: '#6e4a1acc',
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 10, font: { size: 11 } } },
+        y: { beginAtZero: true, ticks: { stepSize: 1 } }
+      }
+    }
+  });
+})();
+</script>
+<div class="prop-section" id="prop-galaxy">
+  <div class="prop-header" style="background:#3c1a6e">
+    <div>
+      <div class="prop-name">Galaxy</div>
+      <div class="prop-sub">0 total leads</div>
+    </div>
+    <div class="prop-stats">
+      <div class="prop-stat"><div class="ps-val">0</div><div class="ps-lbl">Total</div></div>
+      <div class="prop-stat"><div class="ps-val">0</div><div class="ps-lbl">This week</div></div>
+      <div class="prop-stat"><div class="ps-val">0</div><div class="ps-lbl">Today</div></div>
+    </div>
+  </div>
+
+  <div class="chart-wrap">
+    <canvas id="chart-galaxy" height="80"></canvas>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Name</th><th>Phone</th><th>Email</th><th>Form</th><th>Submitted At</th>
+        
+      </tr></thead>
+      <tbody><tr><td colspan="10" style="text-align:center;color:#9ca3af">No leads yet</td></tr></tbody>
+    </table>
+  </div>
+</div>
+<script>
+(function(){
+  var ctx = document.getElementById('chart-galaxy').getContext('2d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: ["18 Mar", "19 Mar", "20 Mar", "21 Mar", "22 Mar", "23 Mar", "24 Mar", "25 Mar", "26 Mar", "27 Mar", "28 Mar", "29 Mar", "30 Mar", "31 Mar", "01 Apr", "02 Apr", "03 Apr", "04 Apr", "05 Apr", "06 Apr", "07 Apr", "08 Apr", "09 Apr", "10 Apr", "11 Apr", "12 Apr", "13 Apr", "14 Apr", "15 Apr", "16 Apr"],
+      datasets: [{
+        label: 'Leads',
+        data: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        backgroundColor: '#3c1a6ecc',
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 10, font: { size: 11 } } },
+        y: { beginAtZero: true, ticks: { stepSize: 1 } }
+      }
+    }
+  });
+})();
+</script>
+
+</div>
+
+<div class="footer">Brigade Hospitality x Gautami &nbsp;|&nbsp; Auto-updated every 15 minutes</div>
+
+<script>
+// Donut chart
+new Chart(document.getElementById('donut-chart'), {
+  type: 'doughnut',
+  data: {
+    labels: [],
+    datasets: [{
+      data: [],
+      backgroundColor: [],
+      borderWidth: 0,
+      hoverOffset: 6
+    }]
+  },
+  options: {
+    responsive: true,
+    plugins: { legend: { display: false } }
+  }
+});
+
+// Tab switching
+function showProp(id, el) {
+  document.querySelectorAll('.prop-section').forEach(s => s.classList.remove('visible'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('prop-' + id).classList.add('visible');
+  el.classList.add('active');
+}
+</script>
+</body>
+</html>
